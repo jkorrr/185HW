@@ -47,12 +47,28 @@ class MSEPolicy(BasePolicy):
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
 
+        layers = []
+        input_dim = state_dim 
+        for h in hidden_dims:
+            layers.append(nn.Linear(input_dim, h))
+            layers.append(nn.ReLU())
+            input_dim = h 
+        
+        layers.append(nn.Linear(input_dim, action_dim * chunk_size))
+        self.network = nn.Sequential(*layers)
+        self.mse = nn.MSELoss()
+
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        B = state.shape[0] 
+        pred = self.network(state)
+        pred = pred.view(B, self.chunk_size, self.action_dim)
+        loss = self.mse(pred, action_chunk) 
+        return loss 
+
 
     def sample_actions(
         self,
@@ -60,7 +76,10 @@ class MSEPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        B = state.shape[0]
+        pred = self.network(state)
+        pred = pred.view(B, self.chunk_size, self.action_dim)
+        return pred
 
 
 class FlowMatchingPolicy(BasePolicy):
@@ -75,13 +94,46 @@ class FlowMatchingPolicy(BasePolicy):
         hidden_dims: tuple[int, ...] = (128, 128),
     ) -> None:
         super().__init__(state_dim, action_dim, chunk_size)
+        
+        in_dim = state_dim + chunk_size * action_dim + 1
+        out_dim = chunk_size * action_dim 
+
+        layers = []
+        cur = in_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(cur, h))
+            layers.append(nn.ReLU())
+            cur = h
+        layers.append(nn.Linear(cur, out_dim))
+
+        self.network = nn.Sequential(*layers)
+        self.mse = nn.MSELoss()
 
     def compute_loss(
         self,
         state: torch.Tensor,
         action_chunk: torch.Tensor,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        B = state.shape[0]
+        # a0 ~ N(0, I)
+        a0 = torch.randn_like(action_chunk)
+        # tau = N(0, 1)
+        tau = torch.rand(B, 1, device = state.device, dtype = state.dtype)
+        # interpeloate 
+        tau_b = tau.view(B, 1, 1)
+        a_tau = tau_b * action_chunk + (1 - tau_b) * a0
+        # A_t - A_0
+        target_velocity = action_chunk - a0
+
+        a_tau_flat = a_tau.view(B, self.chunk_size * self.action_dim)
+        network_input = torch.cat([state, a_tau_flat, tau], dim = 1)
+
+        pred = self.network(network_input)
+        pred = pred.view(B, self.chunk_size, self.action_dim)
+        loss = self.mse(pred, target_velocity)
+        return loss 
+
+
 
     def sample_actions(
         self,
@@ -89,8 +141,19 @@ class FlowMatchingPolicy(BasePolicy):
         *,
         num_steps: int = 10,
     ) -> torch.Tensor:
-        raise NotImplementedError
+        B = state.shape[0]
+        a = torch.randn(B, self.chunk_size, self.action_dim, device=state.device, dtype=state.dtype)
 
+        dt = 1.0 / num_steps 
+        for step in range(num_steps):
+            tau_val = step / num_steps 
+            tau = torch.full((B, 1), tau_val, device=state.device, dtype=state.dtype)
+            a_flat = a.view(B, self.chunk_size * self.action_dim)
+            network_input = torch.cat([state, a_flat, tau], dim = 1)
+            velocity = self.network(network_input)
+            velocity = velocity.view(B, self.chunk_size, self.action_dim)
+            a = a + velocity * dt
+        return a
 
 PolicyType: TypeAlias = Literal["mse", "flow"]
 
