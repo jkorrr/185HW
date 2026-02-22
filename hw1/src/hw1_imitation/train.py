@@ -44,7 +44,7 @@ class TrainConfig:
     # The number of epochs to train for.
     num_epochs: int = 400
     # How often to run evaluation, measured in training steps.
-    eval_interval: int = 10_000
+    eval_interval: int = 5000 
     num_video_episodes: int = 5
     video_size: tuple[int, int] = (256, 256)
     # How often to log training metrics, measured in training steps.
@@ -146,9 +146,13 @@ def run_training(config: TrainConfig) -> None:
             opt.step()
 
             if global_step % config.log_interval == 0:
-                logger.log({"train/loss": float(loss.item())}, step=global_step)
+                logger.log(
+                    {"train/loss": float(loss.item()), "eval/mean_reward": ""},
+                    step=global_step
+                )
             
             if global_step % config.eval_interval == 0 and global_step > 0:
+                print("RUNNING EVAL", global_step)
                 evaluate_policy(model = model,
                                 normalizer = normalizer,
                                 chunk_size = config.chunk_size,
